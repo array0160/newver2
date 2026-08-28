@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
+<title>AR 明信片即時調參 v9.1 iPhone藍底＋說明＋Loading版</title>
+
+<script>
+(() => {
+  const gum = navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices);
+  if (!gum) return;
+  navigator.mediaDevices.getUserMedia = async (constraints={}) => {
+    const c = JSON.parse(JSON.stringify(constraints || {}));
+    const b = (typeof c.video === "object" && c.video) ? c.video : {};
+    c.video = {
+      ...b,
+      facingMode: b.facingMode || {ideal:"environment"},
+      width:{ideal:1920},
+      height:{ideal:1080},
+      frameRate:{ideal:30,max:30}
+    };
+    return gum(c);
+  };
+})();
+</script>
+
+<script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#111;font-family:system-ui,"Microsoft JhengHei",sans-serif}
+#home{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;padding:24px;background:#efe7d9}
+.panel{width:min(430px,100%);text-align:center;color:#2f281d}
+.panel p{line-height:1.55}
+button{border:0;border-radius:12px;min-height:46px;padding:0 16px;font-size:17px;font-weight:700}
+#startBtn{width:100%;background:#2f281d;color:#fff}
+#arRoot{position:fixed;inset:0;opacity:0;pointer-events:none;background:#000}
+body.scanning #home{display:none}
+body.scanning #arRoot{opacity:1;pointer-events:auto;z-index:1500}
+a-scene{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:1500}
+body.scanning video,body.scanning canvas{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;object-fit:cover!important}
+
+#hud{display:none;position:fixed;z-index:3000;left:12px;right:12px;top:max(10px,env(safe-area-inset-top));pointer-events:none}
+body.scanning #hud{display:block}
+#status,#camInfo{margin:0 auto 6px;max-width:520px;padding:8px 10px;border-radius:11px;background:rgba(0,0,0,.62);color:#fff;text-align:center}
+#camInfo{font-size:12px}
+#stopBtn,#tunerToggle{display:none;position:fixed;bottom:max(12px,env(safe-area-inset-bottom));z-index:3300;background:rgba(20,20,20,.85);color:#fff;border:1px solid rgba(255,255,255,.5)}
+#stopBtn{right:12px}
+#scanLoading{display:none;position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:3450;width:48px;height:48px;border:5px solid rgba(255,255,255,.28);border-top-color:#fff;border-radius:50%;animation:scanSpin .72s linear infinite;filter:drop-shadow(0 1px 2px rgba(0,0,0,.35));pointer-events:none}
+#scanLoading.show{display:block}
+@keyframes scanSpin{to{transform:translate(-50%,-50%) rotate(360deg)}}
+#explainBtn{display:none;position:fixed;right:12px;top:max(94px,calc(env(safe-area-inset-top) + 84px));z-index:3330;min-height:40px;padding:0 14px;font-size:15px;background:rgba(20,20,20,.82);color:#fff;border:1px solid rgba(255,255,255,.45)}
+body.scanning #explainBtn{display:block}
+#historyPanel{display:none;position:fixed;left:14px;right:14px;bottom:82px;z-index:3340;height:220px;overflow:hidden;border-radius:14px;background:rgba(15,15,15,.48);backdrop-filter:blur(6px);pointer-events:none}
+#historyPanel.show{display:block}
+#historyInner{position:relative;height:100%;overflow:hidden;padding:16px 18px}
+#historyText{white-space:pre-wrap;line-height:1.72;color:rgba(255,248,232,.94);font-family:"PMingLiU","Songti TC","Noto Serif TC",serif;font-size:18px;will-change:transform}
+#tunerToggle{left:12px}
+body.scanning #stopBtn,body.scanning #tunerToggle{display:block}
+
+#tuner{display:none;position:fixed;z-index:3250;left:10px;right:10px;bottom:72px;max-height:60vh;overflow:auto;background:rgba(12,12,12,.91);color:#fff;border-radius:14px;padding:12px;backdrop-filter:blur(8px)}
+#tuner.open{display:block}
+.group{margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid rgba(255,255,255,.16)}
+.group:last-child{border-bottom:0}
+.group h3{margin:0 0 8px;font-size:15px}
+.row{display:grid;grid-template-columns:116px 1fr 60px;gap:8px;align-items:center;margin:7px 0}
+.row label{font-size:13px}
+.row input[type=range]{width:100%}
+.val{font-size:12px;text-align:right;opacity:.9}
+.checkboxRow{display:flex;gap:8px;align-items:center;margin:8px 0;font-size:13px}
+#snapshot{width:100%;margin-top:6px;background:#fff;color:#111}
+#values{width:100%;min-height:120px;margin-top:8px;resize:none;border-radius:10px;padding:8px;font-family:monospace;font-size:12px;background:#181818;color:#d9f6df;border:1px solid rgba(255,255,255,.2)}
+</style>
+
+<script>
+AFRAME.registerShader('video-grade',{
+  schema:{
+    src:{type:'map',is:'uniform'},
+    brightness:{type:'number',is:'uniform',default:1.0},
+    contrast:{type:'number',is:'uniform',default:1.0},
+    opacity:{type:'number',is:'uniform',default:1.0}
+  },
+  vertexShader:`
+    varying vec2 vUV;
+    void main(){
+      vUV=uv;
+      gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);
+    }
+  `,
+  fragmentShader:`
+    uniform sampler2D src;
+    uniform float brightness;
+    uniform float contrast;
+    uniform float opacity;
+    varying vec2 vUV;
+    void main(){
+      vec4 c=texture2D(src,vUV);
+      c.rgb=(c.rgb-0.5)*contrast+0.5;
+      c.rgb*=brightness;
+      float a=c.a*opacity;
+      if(a<0.10) discard;
+      gl_FragColor=vec4(c.rgb,a);
+    }
+  `
+});
+
+AFRAME.registerShader('soft-irregular-bg',{
+  schema:{
+    src:{type:'map',is:'uniform'},
+    color:{type:'color',is:'uniform',default:'#f3e6cf'},
+    opacity:{type:'number',is:'uniform',default:0.35},
+    feather:{type:'number',is:'uniform',default:0.08},
+    irregular:{type:'number',is:'uniform',default:0.05},
+    textured:{type:'number',is:'uniform',default:0.0}
+  },
+  vertexShader:`
+    varying vec2 vUV;
+    void main(){
+      vUV=uv;
+      gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);
+    }
+  `,
+  fragmentShader:`
+    uniform sampler2D src;
+    uniform vec3 color;
+    uniform float opacity;
+    uniform float feather;
+    uniform float irregular;
+    uniform float textured;
+    varying vec2 vUV;
+
+    void main(){
+      vec4 tex=texture2D(src,vUV);
+      vec3 rgb=mix(color,tex.rgb,step(0.5,textured));
+      float srcA=mix(1.0,tex.a,step(0.5,textured));
+
+      float edge=min(min(vUV.x,1.0-vUV.x),min(vUV.y,1.0-vUV.y));
+      float wobble=(sin(vUV.x*31.0)+sin(vUV.y*27.0)+sin((vUV.x+vUV.y)*19.0))*0.333333;
+      float jitter=wobble*irregular;
+      float f=max(feather,0.001);
+      float mask=smoothstep(0.0,f,edge+jitter);
+
+      gl_FragColor=vec4(rgb,srcA*opacity*mask);
+    }
+  `
+});
+
+
+
+AFRAME.registerShader('soft-irregular-water',{
+  schema:{
+    src:{type:'map',is:'uniform'},
+    opacity:{type:'number',is:'uniform',default:0.34},
+    feather:{type:'number',is:'uniform',default:0.10},
+    irregular:{type:'number',is:'uniform',default:0.035}
+  },
+  vertexShader:`
+    varying vec2 vUV;
+    void main(){
+      vUV=uv;
+      gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);
+    }
+  `,
+  fragmentShader:`
+    uniform sampler2D src;
+    uniform float opacity;
+    uniform float feather;
+    uniform float irregular;
+    varying vec2 vUV;
+    void main(){
+      vec4 tex=texture2D(src,vUV);
+      float edge=min(min(vUV.x,1.0-vUV.x),min(vUV.y,1.0-vUV.y));
+      float wobble=(sin(vUV.x*23.0)+sin(vUV.y*19.0)+sin((vUV.x+vUV.y)*13.0))*0.333333;
+      float mask=smoothstep(0.0,max(feather,0.001),edge+wobble*irregular);
+      float a=tex.a*opacity*mask;
+      if(a<0.015) discard;
+      gl_FragColor=vec4(tex.rgb,a);
+    }
+  `
+});
+
+AFRAME.registerComponent('water-gentle-motion',{
+  init(){
+    this.baseX=0;
+    this.baseY=0;
+  },
+  tick(t){
+    const cfg=window.ARCFG;
+    if(!cfg || !cfg.water || !cfg.water.enabled) return;
+
+    // Very light movement only: no custom shader, so camera startup stays stable.
+    const a=cfg.water.flowAmp;
+    const s=cfg.water.flowSpeed;
+    this.el.object3D.position.x = Math.sin(t*0.0007*s) * a;
+    this.el.object3D.position.y = cfg.water.y + Math.cos(t*0.00055*s) * a*0.25;
+
+    const pulse = 1 + Math.sin(t*0.0011*s) * cfg.water.scalePulse;
+    this.el.object3D.scale.set(pulse,pulse,1);
+
+    const mesh=this.el.getObject3D('mesh');
+    if(mesh && mesh.material){
+      mesh.material.opacity = cfg.water.opacity * (0.96 + 0.04*Math.sin(t*0.0013*s));
+      mesh.material.transparent = true;
+    }
+  }
+});
+
+AFRAME.registerComponent('cloud-drift-fade',{
+  schema:{idx:{type:'int',default:1}},
+  init(){this.phase=(this.data.idx-1)*0.31},
+  tick(t){
+    const cfg=window.ARCFG;if(!cfg)return;
+    const i=this.data.idx-1,c=cfg.clouds[i];
+    const duration=26000/Math.max(0.1,cfg.cloudSpeed);
+    const q=((t/duration)+this.phase)%1;
+    const x=c.x-c.span/2+q*c.span;
+    this.el.object3D.position.set(x,c.y,c.z);
+    this.el.object3D.scale.set(c.scale,c.scale,1);
+
+    const fade=Math.sin(t*c.fadeFreq + this.phase)*0.5+0.5;
+    const opacity=Math.max(0,Math.min(1,c.opacity - c.fadeRange/2 + fade*c.fadeRange));
+    const m=this.el.getObject3D('mesh');
+    if(m?.material){m.material.transparent=true;m.material.opacity=opacity}
+  }
+});
+
+AFRAME.registerComponent('boat-motion',{
+  schema:{idx:{type:'int',default:1}},
+  init(){this.lastWake=0;this.wakeRoot=document.querySelector('#wakeRoot'+this.data.idx)},
+  tick(t){
+    const cfg=window.ARCFG;if(!cfg)return;
+    const b=cfg.boats[this.data.idx-1];
+    if(!b.enabled){this.el.setAttribute('visible',false);return}
+    this.el.setAttribute('visible',true);
+
+    const duration=b.baseDuration/Math.max(.1,b.speed);
+    const p=((t+b.phaseOffset)%duration)/duration;
+    const e=p<.5?2*p*p:1-Math.pow(-2*p+2,2)/2;
+    const x=b.startX+(b.endX-b.startX)*e;
+    const y=b.y+Math.sin((t+b.phaseOffset)*.0045)*.003;
+    this.el.object3D.position.set(x,y,b.z);
+
+    const wk=cfg.wake;
+    if(t-this.lastWake>wk.interval){
+      this.lastWake=t;
+      this.spawnWake(x-wk.offsetX,y-wk.offsetY,wk.z);
+    }
+  },
+  spawnWake(x,y,z){
+    const cfg=window.ARCFG;if(!cfg||!this.wakeRoot)return;
+    const wk=cfg.wake;
+    const e=document.createElement('a-ellipse');
+    e.setAttribute('position',`${x} ${y} ${z}`);
+    e.setAttribute('radius-x',String(wk.rx));
+    e.setAttribute('radius-y',String(wk.ry));
+    e.setAttribute('material',`color:#e5fff8;transparent:true;opacity:${wk.opacity};side:double;shader:flat;depthWrite:false`);
+    this.wakeRoot.appendChild(e);
+    const born=performance.now(),life=wk.life,obj=e.object3D;
+    const f=(now)=>{
+      const q=(now-born)/life;
+      if(q>=1){e.remove();return}
+      obj.position.x-=wk.drift*q;
+      obj.scale.set(1+q*wk.growX,1+q*wk.growY,1);
+      const m=e.getObject3D('mesh');
+      if(m?.material)m.material.opacity=wk.opacity*(1-q);
+      requestAnimationFrame(f);
+    };
+    requestAnimationFrame(f);
+  }
+});
+</script>
+</head>
+
+<body>
+<div id="home">
+  <div class="panel">
+    <h1>AR 明信片即時調參 v9.1 iPhone藍底＋說明＋Loading版</h1>
+    <p>新增背景切換、第二艘船、每朵雲獨立 Z/大小/透明呼吸與更明顯船尾水紋。</p>
+    <button id="startBtn">開始 AR 掃描</button>
+  </div>
+</div>
+
+<div id="arRoot">
+<a-scene id="arScene"
+  mindar-image="imageTargetSrc: ./assets/targets.mind; autoStart:false;"
+  color-space="sRGB"
+  renderer="colorManagement:true;physicallyCorrectLights:true;alpha:true"
+  vr-mode-ui="enabled:false"
+  device-orientation-permission-ui="enabled:false"
+  embedded>
+
+<a-assets timeout="15000">
+  <img id="backBridgeTex" src="./assets/backbridge.png">
+  <img id="frontBridgeTex" src="./assets/front_bridge.png">
+  <img id="cloud1Tex" src="./assets/cloud1.png">
+  <img id="cloud2Tex" src="./assets/cloud2.png">
+  <img id="cloud3Tex" src="./assets/cloud3.png">
+  <img id="cloud4Tex" src="./assets/cloud4.png">
+  <img id="bkTex" src="./assets/bk.png">
+  <img id="waterTex" src="./assets/water.png">
+  <video id="boatVideo" src="./assets/boat_alpha.webm" preload="auto" loop muted playsinline webkit-playsinline></video>
+</a-assets>
+
+<a-camera position="0 0 0" look-controls="enabled:false"></a-camera>
+
+<a-entity id="target0" mindar-image-target="targetIndex:0">
+  <a-entity id="sceneGroup">
+
+    <a-plane id="basePlate"
+      material="shader:soft-irregular-bg;color:#f3e6cf;opacity:.35;feather:.08;irregular:.05;textured:0;transparent:true;side:double;depthWrite:false">
+    </a-plane>
+
+    <a-image id="bkLayer" src="#bkTex"
+      visible="false"
+      material="shader:soft-irregular-bg;src:#bkTex;opacity:.35;feather:.08;irregular:.05;textured:1;transparent:true;side:double;depthWrite:false">
+    </a-image>
+
+    <a-image id="backBridge" src="#backBridgeTex"
+      material="transparent:true;opacity:1;side:double;shader:flat;depthWrite:false"></a-image>
+
+    <a-image id="cloud1" src="#cloud1Tex" material="transparent:true;side:double;shader:flat;depthWrite:false" cloud-drift-fade="idx:1"></a-image>
+    <a-image id="cloud2" src="#cloud2Tex" material="transparent:true;side:double;shader:flat;depthWrite:false" cloud-drift-fade="idx:2"></a-image>
+    <a-image id="cloud3" src="#cloud3Tex" material="transparent:true;side:double;shader:flat;depthWrite:false" cloud-drift-fade="idx:3"></a-image>
+    <a-image id="cloud4" src="#cloud4Tex" material="transparent:true;side:double;shader:flat;depthWrite:false" cloud-drift-fade="idx:4"></a-image>
+
+    <a-entity id="wakeRoot1"></a-entity>
+    <a-video id="boat1" src="#boatVideo"
+      material="shader:video-grade;src:#boatVideo;brightness:1.25;contrast:1.75;opacity:1;transparent:true;side:double"
+      boat-motion="idx:1"
+      visible="false"></a-video>
+
+    <a-entity id="wakeRoot2"></a-entity>
+    <a-video id="boat2" src="#boatVideo"
+      material="shader:video-grade;src:#boatVideo;brightness:1.1;contrast:1.5;opacity:1;transparent:true;side:double"
+      boat-motion="idx:2"
+      visible="false"></a-video>
+
+    <a-image id="frontBridge" src="#frontBridgeTex"
+      material="transparent:true;opacity:1;side:double;shader:flat;depthWrite:false"></a-image>
+
+    <!-- Stable water layer: no custom shader -->
+    <a-image id="waterLayer" src="#waterTex"
+      visible="false"
+      position="0 -0.10 0.105"
+      material="shader:soft-irregular-water;src:#waterTex;opacity:.34;feather:.10;irregular:.035;transparent:true;side:double;depthWrite:false"
+      water-gentle-motion>
+    </a-image>
+
+  </a-entity>
+</a-entity>
+</a-scene>
+</div>
+
+<canvas id="iosBoatCanvas" width="240" height="135" style="display:none"></canvas>
+
+<div id="hud">
+  <div id="status">尚未啟動</div>
+  <div id="camInfo">Camera: 等待資訊…</div>
+</div>
+<div id="scanLoading" aria-label="載入中"></div>
+<button id="explainBtn" type="button">看說明</button>
+<div id="historyPanel"><div id="historyInner"><div id="historyText">1920年 明治橋
+
+明治橋曾是城市交通與河岸景觀的重要節點。
+在時代更迭中，橋梁見證了地方生活與城市發展。</div></div></div>
+
+<button id="tunerToggle">調整參數</button>
+<button id="stopBtn">結束掃描</button>
+
+<div id="tuner">
+  <div class="group">
+    <h3>整體 / 背景</h3>
+    <div class="row"><label>整體尺寸</label><input id="scale" type="range" min=".45" max=".82" step=".01"><span class="val" id="scaleV"></span></div>
+    <div class="row"><label>整體 Z</label><input id="sceneZ" type="range" min="0" max=".07" step=".001"><span class="val" id="sceneZV"></span></div>
+
+    <div class="checkboxRow"><input id="useWhiteBase" type="checkbox" checked><label for="useWhiteBase">使用白色底層</label></div>
+    <div class="row"><label>白底透明度</label><input id="baseOpacity" type="range" min="0" max=".60" step=".01"><span class="val" id="baseOpacityV"></span></div>
+    <div class="row"><label>白底 Z</label><input id="baseZ" type="range" min="0" max=".03" step=".001"><span class="val" id="baseZV"></span></div>
+    <div class="row"><label>白底大小</label><input id="baseScale" type="range" min=".5" max="1.4" step=".02"><span class="val" id="baseScaleV"></span></div>
+
+    <div class="checkboxRow"><input id="useBk" type="checkbox"><label for="useBk">使用 bk.png 自訂背景</label></div>
+    <div class="row"><label>BK透明度</label><input id="bkOpacity" type="range" min="0" max="1" step=".02"><span class="val" id="bkOpacityV"></span></div>
+    <div class="row"><label>BK Z</label><input id="bkZ" type="range" min="0" max=".03" step=".001"><span class="val" id="bkZV"></span></div>
+    <div class="row"><label>BK大小</label><input id="bkScale" type="range" min=".5" max="1.4" step=".02"><span class="val" id="bkScaleV"></span></div>
+    <div class="checkboxRow"><input id="softBg" type="checkbox" checked><label for="softBg">背景不規則柔邊</label></div>
+    <div class="row"><label>柔邊範圍</label><input id="bgFeather" type="range" min="0" max=".20" step=".005"><span class="val" id="bgFeatherV"></span></div>
+    <div class="row"><label>邊緣不規則</label><input id="bgIrregular" type="range" min="0" max=".12" step=".005"><span class="val" id="bgIrregularV"></span></div>
+  </div>
+
+  <div class="group">
+    <h3>橋</h3>
+    <div class="row"><label>後橋 Z</label><input id="backZ" type="range" min="0" max=".06" step=".001"><span class="val" id="backZV"></span></div>
+    <div class="row"><label>前橋 Z</label><input id="frontZ" type="range" min="0" max=".09" step=".001"><span class="val" id="frontZV"></span></div>
+  </div>
+
+  <div class="group">
+    <h3>船 1</h3>
+    <div class="row"><label>大小</label><input id="b1Scale" type="range" min=".35" max="2.8" step=".05"><span class="val" id="b1ScaleV"></span></div>
+    <div class="row"><label>Y</label><input id="b1Y" type="range" min="-.18" max=".02" step=".002"><span class="val" id="b1YV"></span></div>
+    <div class="row"><label>Z</label><input id="b1Z" type="range" min="0" max=".08" step=".001"><span class="val" id="b1ZV"></span></div>
+    <div class="row"><label>起點 X</label><input id="b1StartX" type="range" min="-.35" max=".10" step=".01"><span class="val" id="b1StartXV"></span></div>
+    <div class="row"><label>終點 X</label><input id="b1EndX" type="range" min="-.10" max=".35" step=".01"><span class="val" id="b1EndXV"></span></div>
+    <div class="row"><label>速度</label><input id="b1Speed" type="range" min=".2" max="3" step=".05"><span class="val" id="b1SpeedV"></span></div>
+    <div class="row"><label>亮度</label><input id="b1Brightness" type="range" min=".5" max="2" step=".05"><span class="val" id="b1BrightnessV"></span></div>
+    <div class="row"><label>對比</label><input id="b1Contrast" type="range" min=".5" max="3" step=".05"><span class="val" id="b1ContrastV"></span></div>
+  </div>
+
+  <div class="group">
+    <h3>船 2</h3>
+    <div class="checkboxRow"><input id="b2Enabled" type="checkbox" checked><label for="b2Enabled">啟用第二艘船</label></div>
+    <div class="row"><label>大小</label><input id="b2Scale" type="range" min=".25" max="2.2" step=".05"><span class="val" id="b2ScaleV"></span></div>
+    <div class="row"><label>Y</label><input id="b2Y" type="range" min="-.18" max=".02" step=".002"><span class="val" id="b2YV"></span></div>
+    <div class="row"><label>Z</label><input id="b2Z" type="range" min="0" max=".08" step=".001"><span class="val" id="b2ZV"></span></div>
+    <div class="row"><label>起點 X</label><input id="b2StartX" type="range" min="-.35" max=".20" step=".01"><span class="val" id="b2StartXV"></span></div>
+    <div class="row"><label>終點 X</label><input id="b2EndX" type="range" min="-.20" max=".35" step=".01"><span class="val" id="b2EndXV"></span></div>
+    <div class="row"><label>速度</label><input id="b2Speed" type="range" min=".2" max="3" step=".05"><span class="val" id="b2SpeedV"></span></div>
+    <div class="row"><label>亮度</label><input id="b2Brightness" type="range" min=".5" max="2" step=".05"><span class="val" id="b2BrightnessV"></span></div>
+    <div class="row"><label>對比</label><input id="b2Contrast" type="range" min=".5" max="3" step=".05"><span class="val" id="b2ContrastV"></span></div>
+  </div>
+
+  <div class="group">
+    <h3>雲整體</h3>
+    <div class="row"><label>整體速度</label><input id="cloudSpeed" type="range" min=".2" max="3" step=".1"><span class="val" id="cloudSpeedV"></span></div>
+  </div>
+
+  <div id="cloudGroups"></div>
+
+  <div class="group">
+    <h3>水層（穩定版）</h3>
+    <div class="checkboxRow"><input id="waterEnabled" type="checkbox"><label for="waterEnabled">顯示 water.png</label></div>
+    <div class="row"><label>透明度</label><input id="waterOpacity" type="range" min="0" max=".8" step=".02"><span class="val" id="waterOpacityV"></span></div>
+    <div class="row"><label>Y</label><input id="waterY" type="range" min="-.25" max=".05" step=".005"><span class="val" id="waterYV"></span></div>
+    <div class="row"><label>Z</label><input id="waterZ" type="range" min="0" max=".14" step=".001"><span class="val" id="waterZV"></span></div>
+    <div class="row"><label>大小</label><input id="waterScale" type="range" min=".5" max="1.4" step=".02"><span class="val" id="waterScaleV"></span></div>
+    <div class="row"><label>流動幅度</label><input id="waterFlowAmp" type="range" min="0" max=".02" step=".001"><span class="val" id="waterFlowAmpV"></span></div>
+    <div class="row"><label>流動速度</label><input id="waterFlowSpeed" type="range" min=".1" max="2.5" step=".1"><span class="val" id="waterFlowSpeedV"></span></div>
+    <div class="row"><label>水邊柔化</label><input id="waterFeather" type="range" min=".01" max=".25" step=".005"><span class="val" id="waterFeatherV"></span></div>
+    <div class="row"><label>水邊不規則</label><input id="waterIrregular" type="range" min="0" max=".12" step=".005"><span class="val" id="waterIrregularV"></span></div>
+  </div>
+
+  <div class="group">
+    <h3>歷史說明</h3>
+    <div class="row"><label>字幕速度</label><input id="historySpeed" type="range" min=".2" max="5" step=".1"><span class="val" id="historySpeedV"></span></div>
+    <div class="row"><label>字幕透明度</label><input id="historyOpacity" type="range" min=".2" max="1" step=".05"><span class="val" id="historyOpacityV"></span></div>
+    <div class="row"><label>字幕框高度</label><input id="historyHeight" type="range" min="120" max="420" step="10"><span class="val" id="historyHeightV"></span></div>
+    <textarea id="historyInput" style="width:100%;min-height:100px;margin-top:8px;border-radius:10px;padding:8px;font-size:14px;">1920年 明治橋
+
+明治橋曾是城市交通與河岸景觀的重要節點。
+在時代更迭中，橋梁見證了地方生活與城市發展。</textarea>
+    <button id="historyApply" type="button" style="width:100%;margin-top:8px;">套用說明文字</button>
+  </div>
+
+  <div class="group">
+    <h3>船尾水紋</h3>
+    <div class="row"><label>生成間隔</label><input id="wakeInterval" type="range" min="40" max="300" step="10"><span class="val" id="wakeIntervalV"></span></div>
+    <div class="row"><label>水紋大小</label><input id="wakeSize" type="range" min=".5" max="4" step=".1"><span class="val" id="wakeSizeV"></span></div>
+    <div class="row"><label>水紋透明</label><input id="wakeOpacity" type="range" min=".03" max=".8" step=".01"><span class="val" id="wakeOpacityV"></span></div>
+    <div class="row"><label>存活時間</label><input id="wakeLife" type="range" min="500" max="3500" step="100"><span class="val" id="wakeLifeV"></span></div>
+    <div class="row"><label>向後延展</label><input id="wakeDrift" type="range" min="0" max=".04" step=".002"><span class="val" id="wakeDriftV"></span></div>
+  </div>
+
+  <button id="snapshot">輸出目前參數</button>
+  <textarea id="values" readonly></textarea>
+</div>
+
+<script>
+window.ARCFG={
+  scale:.63,
+  sceneZ:0,
+  base:{enabled:true,opacity:.37,z:0,scale:1.08},
+  bk:{enabled:true,opacity:.70,z:0,scale:.98},
+  bgMask:{enabled:true,feather:.20,irregular:.015},
+  bridge:{backZ:.060,frontZ:.077},
+  boats:[
+    {enabled:true,width:.09,height:.05,scale:1.70,y:-.10,z:.070,startX:-.17,endX:.21,baseDuration:13000,speed:.65,brightness:1.25,contrast:1.75,phaseOffset:0},
+    {enabled:false,width:.09,height:.05,scale:1.50,y:-.038,z:.044,startX:.12,endX:.35,baseDuration:13000,speed:2.80,brightness:1.15,contrast:1.55,phaseOffset:4200}
+  ],
+  clouds:[
+    // 雲1：左上，較近，移動範圍小
+    {x:-.245,y:.335,z:.088,opacity:.52,w:.17,h:.086,scale:1.18,span:.105,fadeRange:.22,fadeFreq:.0010},
+    // 雲2：右上，最大，位置高但 Z 稍低避免跟雲1疊
+    {x: .165,y:.405,z:.066,opacity:.60,w:.14,h:.070,scale:1.38,span:.095,fadeRange:.16,fadeFreq:.0009},
+    // 雲3：中左偏低，小而近，填補橋左上方空間
+    {x:-.075,y:.205,z:.104,opacity:.36,w:.15,h:.085,scale:.82,span:.080,fadeRange:.26,fadeFreq:.00115},
+    // 雲4：右中，遠一些，避開主橋塔
+    {x: .275,y:.245,z:.054,opacity:.43,w:.18,h:.070,scale:1.02,span:.070,fadeRange:.14,fadeFreq:.00085}
+  ],
+  cloudSpeed:.65,
+  water:{enabled:false,opacity:.34,y:-.105,z:.108,scale:1.02,flowAmp:.004,flowSpeed:.65,scalePulse:.006,feather:.10,irregular:.035},
+  history:{speed:.9,opacity:.94,height:220},
+  wake:{interval:90,offsetX:.028,offsetY:.006,z:.008,rx:.24,ry:.06,opacity:.28,life:1900,drift:.018,growX:2.6,growY:1.1}
+};
+
+const scene=document.getElementById('arScene');
+const target=document.getElementById('target0');
+const sceneGroup=document.getElementById('sceneGroup');
+const basePlate=document.getElementById('basePlate');
+const bkLayer=document.getElementById('bkLayer');
+const backBridge=document.getElementById('backBridge');
+const frontBridge=document.getElementById('frontBridge');
+const waterLayer=document.getElementById('waterLayer');
+const boat1=document.getElementById('boat1');
+const boat2=document.getElementById('boat2');
+const boatVideo=document.getElementById('boatVideo');
+const iosBoatCanvas=document.getElementById('iosBoatCanvas');
+const iosBoatCtx=iosBoatCanvas.getContext('2d',{willReadFrequently:true});
+const isIOS=/iP(hone|ad|od)/.test(navigator.userAgent) ||
+  (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+let iosBoatTimer=0;
+let iosBoatLastFrame=0;
+
+const status=document.getElementById('status');
+const camInfo=document.getElementById('camInfo');
+const startBtn=document.getElementById('startBtn');
+const stopBtn=document.getElementById('stopBtn');
+const tuner=document.getElementById('tuner');
+const tunerToggle=document.getElementById('tunerToggle');
+const scanLoading=document.getElementById('scanLoading');
+const explainBtn=document.getElementById('explainBtn');
+const historyPanel=document.getElementById('historyPanel');
+const historyText=document.getElementById('historyText');
+const historyInput=document.getElementById('historyInput');
+let historyOpen=false,historyRAF=0,historyStart=0;
+let running=false,starting=false,ready=false,timer=null;
+
+function setBoatMaterial(el,b){
+  el.setAttribute('material',{
+    shader:'video-grade',
+    src:'#boatVideo',
+    brightness:b.brightness,
+    contrast:b.contrast,
+    opacity:1,
+    transparent:true,
+    side:'double',
+    depthWrite:false,
+    alphaTest:0.10
+  });
+}
+
+function sampleCornerKey(img,W,H){
+  const d=img.data;
+  const blocks=[
+    [0,0,14,14],
+    [W-14,0,W,14],
+    [0,H-14,14,H],
+    [W-14,H-14,W,H]
+  ];
+  let r=0,g=0,b=0,n=0;
+  for(const [x0,y0,x1,y1] of blocks){
+    for(let y=y0;y<y1;y+=2){
+      for(let x=x0;x<x1;x+=2){
+        const i=(y*W+x)*4;
+        r+=d[i]; g+=d[i+1]; b+=d[i+2]; n++;
+      }
+    }
+  }
+  return {r:r/n,g:g/n,b:b/n};
+}
+
+function processIOSBoatFrame(){
+  if(!isIOS || boatVideo.paused || boatVideo.readyState<2)return;
+
+  const now=performance.now();
+  // ~18 fps is enough for the small boat and reduces iPhone CPU load.
+  if(now-iosBoatLastFrame<55)return;
+  iosBoatLastFrame=now;
+
+  const W=iosBoatCanvas.width,H=iosBoatCanvas.height;
+  try{
+    iosBoatCtx.clearRect(0,0,W,H);
+    iosBoatCtx.drawImage(boatVideo,0,0,W,H);
+    const img=iosBoatCtx.getImageData(0,0,W,H);
+    const d=img.data;
+    const key=sampleCornerKey(img,W,H);
+
+    // Only chroma-key if Safari has actually turned transparent pixels blue.
+    const keyLooksBlue=(key.b>80 && key.b-Math.max(key.r,key.g)>18);
+
+    if(keyLooksBlue){
+      const bcfg=ARCFG.boats[0];
+      const bright=bcfg.brightness;
+      const contrast=bcfg.contrast;
+
+      for(let i=0;i<d.length;i+=4){
+        const r=d[i], g=d[i+1], b=d[i+2];
+        const dr=r-key.r, dg=g-key.g, db=b-key.b;
+        const dist=Math.sqrt(dr*dr+dg*dg+db*db);
+
+        // Strongly matching the sampled corner blue => transparent.
+        // 34..92 gives a soft antialiased transition instead of a hard box.
+        let a;
+        if(dist<=34) a=0;
+        else if(dist>=92) a=255;
+        else a=Math.round((dist-34)/(92-34)*255);
+
+        // Preserve any alpha Safari did decode.
+        a=Math.min(a,d[i+3]);
+
+        // Suppress blue spill on semi-transparent edge pixels.
+        if(a<245){
+          const q=1-a/255;
+          d[i+2]=Math.max(0,b-q*55);
+        }
+
+        // Keep the existing brightness / contrast tuning behavior.
+        if(a>0){
+          d[i]=Math.max(0,Math.min(255,(((r/255-.5)*contrast+.5)*bright)*255));
+          d[i+1]=Math.max(0,Math.min(255,(((g/255-.5)*contrast+.5)*bright)*255));
+          d[i+2]=Math.max(0,Math.min(255,(((d[i+2]/255-.5)*contrast+.5)*bright)*255));
+        }
+        d[i+3]=a;
+      }
+      iosBoatCtx.putImageData(img,0,0);
+    }
+
+    [boat1,boat2].forEach(el=>{
+      const mesh=el.getObject3D('mesh');
+      if(mesh?.material?.map) mesh.material.map.needsUpdate=true;
+    });
+  }catch(e){
+    console.warn('iOS boat key frame failed',e);
+  }
+}
+
+function startIOSBoatFix(){
+  if(!isIOS || iosBoatTimer)return;
+
+  // Switch only the boat texture. Camera and MindAR are untouched.
+  [boat1,boat2].forEach(el=>{
+    el.setAttribute('material',{
+      shader:'flat',
+      src:'#iosBoatCanvas',
+      transparent:true,
+      opacity:1,
+      side:'double',
+      depthWrite:false,
+      alphaTest:.03
+    });
+  });
+
+  iosBoatTimer=setInterval(processIOSBoatFrame,55);
+}
+
+function stopIOSBoatFix(){
+  if(iosBoatTimer){
+    clearInterval(iosBoatTimer);
+    iosBoatTimer=0;
+  }
+}
+
+
+function showScanLoading(){scanLoading.classList.add('show')}
+function hideScanLoading(){scanLoading.classList.remove('show')}
+function syncHistoryStyle(){
+  historyPanel.style.height=ARCFG.history.height+'px';
+  historyText.style.opacity=ARCFG.history.opacity;
+}
+function animateHistory(ts){
+  if(!historyOpen)return;
+  if(!historyStart)historyStart=ts;
+  const elapsed=(ts-historyStart)/1000;
+  const speedPx=18+ARCFG.history.speed*38;
+  const panelH=historyPanel.clientHeight||220;
+  const textH=historyText.scrollHeight||300;
+  const travel=panelH+textH;
+  const y=panelH-((elapsed*speedPx)%Math.max(1,travel));
+  historyText.style.transform=`translateY(${y}px)`;
+  historyRAF=requestAnimationFrame(animateHistory);
+}
+function openHistory(){
+  historyOpen=true;historyStart=0;syncHistoryStyle();
+  historyPanel.classList.add('show');explainBtn.textContent='關閉說明';
+  if(historyRAF)cancelAnimationFrame(historyRAF);
+  historyRAF=requestAnimationFrame(animateHistory);
+}
+function closeHistory(){
+  historyOpen=false;historyPanel.classList.remove('show');explainBtn.textContent='看說明';
+  if(historyRAF){cancelAnimationFrame(historyRAF);historyRAF=0;}
+}
+
+function applyAll(){
+  const c=ARCFG;
+  sceneGroup.setAttribute('position',`0 0 ${c.sceneZ}`);
+
+  const w=c.scale,h=c.scale*.75;
+
+  basePlate.setAttribute('visible',c.base.enabled);
+  basePlate.setAttribute('position',`0 0 ${c.base.z}`);
+  basePlate.setAttribute('width',w*c.base.scale);
+  basePlate.setAttribute('height',h*c.base.scale);
+  basePlate.setAttribute('material','opacity',c.base.opacity);
+  basePlate.setAttribute('material','feather',c.bgMask.enabled?c.bgMask.feather:0.001);
+  basePlate.setAttribute('material','irregular',c.bgMask.enabled?c.bgMask.irregular:0);
+
+  bkLayer.setAttribute('visible',c.bk.enabled);
+  bkLayer.setAttribute('position',`0 0 ${c.bk.z}`);
+  bkLayer.setAttribute('width',w*c.bk.scale);
+  bkLayer.setAttribute('height',h*c.bk.scale);
+  bkLayer.setAttribute('material','opacity',c.bk.opacity);
+  bkLayer.setAttribute('material','feather',c.bgMask.enabled?c.bgMask.feather:0.001);
+  bkLayer.setAttribute('material','irregular',c.bgMask.enabled?c.bgMask.irregular:0);
+
+  backBridge.setAttribute('position',`0 0 ${c.bridge.backZ}`);
+  backBridge.setAttribute('width',w); backBridge.setAttribute('height',h);
+  frontBridge.setAttribute('position',`0 0 ${c.bridge.frontZ}`);
+  frontBridge.setAttribute('width',w); frontBridge.setAttribute('height',h);
+
+  waterLayer.setAttribute('visible',c.water.enabled);
+  waterLayer.setAttribute('position',`0 ${c.water.y} ${c.water.z}`);
+  waterLayer.setAttribute('width',w*c.water.scale);
+  waterLayer.setAttribute('height',h*c.water.scale);
+  waterLayer.setAttribute('material','opacity',c.water.opacity);
+  waterLayer.setAttribute('material','feather',c.water.feather);
+  waterLayer.setAttribute('material','irregular',c.water.irregular);
+
+  [boat1,boat2].forEach((el,i)=>{
+    const b=c.boats[i];
+    el.setAttribute('width',b.width*b.scale);
+    el.setAttribute('height',b.height*b.scale);
+    setBoatMaterial(el,b);
+  });
+
+  c.clouds.forEach((cl,i)=>{
+    const el=document.getElementById('cloud'+(i+1));
+    el.setAttribute('width',cl.w);
+    el.setAttribute('height',cl.h);
+  });
+}
+
+function bindRange(id,getter,setter,decimals=3){
+  const el=document.getElementById(id),out=document.getElementById(id+'V');
+  el.value=getter(); out.textContent=Number(getter()).toFixed(decimals);
+  el.addEventListener('input',()=>{setter(+el.value);out.textContent=Number(el.value).toFixed(decimals);applyAll()});
+}
+
+bindRange('scale',()=>ARCFG.scale,v=>ARCFG.scale=v,2);
+bindRange('sceneZ',()=>ARCFG.sceneZ,v=>ARCFG.sceneZ=v);
+bindRange('baseOpacity',()=>ARCFG.base.opacity,v=>ARCFG.base.opacity=v,2);
+bindRange('baseZ',()=>ARCFG.base.z,v=>ARCFG.base.z=v);
+bindRange('baseScale',()=>ARCFG.base.scale,v=>ARCFG.base.scale=v,2);
+bindRange('bkOpacity',()=>ARCFG.bk.opacity,v=>ARCFG.bk.opacity=v,2);
+bindRange('bkZ',()=>ARCFG.bk.z,v=>ARCFG.bk.z=v);
+bindRange('bkScale',()=>ARCFG.bk.scale,v=>ARCFG.bk.scale=v,2);
+bindRange('bgFeather',()=>ARCFG.bgMask.feather,v=>ARCFG.bgMask.feather=v,3);
+bindRange('bgIrregular',()=>ARCFG.bgMask.irregular,v=>ARCFG.bgMask.irregular=v,3);
+bindRange('backZ',()=>ARCFG.bridge.backZ,v=>ARCFG.bridge.backZ=v);
+bindRange('frontZ',()=>ARCFG.bridge.frontZ,v=>ARCFG.bridge.frontZ=v);
+
+function bindBoat(n){
+  const b=ARCFG.boats[n-1],p='b'+n;
+  bindRange(p+'Scale',()=>b.scale,v=>b.scale=v,2);
+  bindRange(p+'Y',()=>b.y,v=>b.y=v);
+  bindRange(p+'Z',()=>b.z,v=>b.z=v);
+  bindRange(p+'StartX',()=>b.startX,v=>b.startX=v,2);
+  bindRange(p+'EndX',()=>b.endX,v=>b.endX=v,2);
+  bindRange(p+'Speed',()=>b.speed,v=>b.speed=v,2);
+  bindRange(p+'Brightness',()=>b.brightness,v=>b.brightness=v,2);
+  bindRange(p+'Contrast',()=>b.contrast,v=>b.contrast=v,2);
+}
+bindBoat(1);bindBoat(2);
+
+document.getElementById('softBg').checked=ARCFG.bgMask.enabled;
+document.getElementById('softBg').addEventListener('change',e=>{ARCFG.bgMask.enabled=e.target.checked;applyAll()});
+document.getElementById('useWhiteBase').checked=ARCFG.base.enabled;
+document.getElementById('useWhiteBase').addEventListener('change',e=>{ARCFG.base.enabled=e.target.checked;applyAll()});
+document.getElementById('useBk').checked=ARCFG.bk.enabled;
+document.getElementById('useBk').addEventListener('change',e=>{ARCFG.bk.enabled=e.target.checked;applyAll()});
+document.getElementById('b2Enabled').checked=ARCFG.boats[1].enabled;
+document.getElementById('b2Enabled').addEventListener('change',e=>{ARCFG.boats[1].enabled=e.target.checked;applyAll()});
+
+bindRange('cloudSpeed',()=>ARCFG.cloudSpeed,v=>ARCFG.cloudSpeed=v,1);
+
+const cloudGroups=document.getElementById('cloudGroups');
+ARCFG.clouds.forEach((cl,i)=>{
+  const n=i+1;
+  const wrap=document.createElement('div');
+  wrap.className='group';
+  wrap.innerHTML=`
+    <h3>雲 ${n}</h3>
+    <div class="row"><label>Y（上下）</label><input id="c${n}Y" type="range" min="-.30" max=".70" step=".01"><span class="val" id="c${n}YV"></span></div>
+    <div class="row"><label>Z</label><input id="c${n}Z" type="range" min="0" max=".16" step=".002"><span class="val" id="c${n}ZV"></span></div>
+    <div class="row"><label>大小</label><input id="c${n}Scale" type="range" min=".4" max="2.2" step=".05"><span class="val" id="c${n}ScaleV"></span></div>
+    <div class="row"><label>基礎透明度</label><input id="c${n}Opacity" type="range" min=".05" max="1" step=".02"><span class="val" id="c${n}OpacityV"></span></div>
+    <div class="row"><label>透明變化幅度</label><input id="c${n}FadeRange" type="range" min="0" max=".8" step=".02"><span class="val" id="c${n}FadeRangeV"></span></div>
+    <div class="row"><label>透明變化頻率</label><input id="c${n}FadeFreq" type="range" min=".0002" max=".005" step=".0001"><span class="val" id="c${n}FadeFreqV"></span></div>
+    <div class="row"><label>橫移範圍</label><input id="c${n}Span" type="range" min=".10" max=".70" step=".01"><span class="val" id="c${n}SpanV"></span></div>
+  `;
+  cloudGroups.appendChild(wrap);
+  bindRange(`c${n}Y`,()=>cl.y,v=>cl.y=v,2);
+  bindRange(`c${n}Z`,()=>cl.z,v=>cl.z=v);
+  bindRange(`c${n}Scale`,()=>cl.scale,v=>cl.scale=v,2);
+  bindRange(`c${n}Opacity`,()=>cl.opacity,v=>cl.opacity=v,2);
+  bindRange(`c${n}FadeRange`,()=>cl.fadeRange,v=>cl.fadeRange=v,2);
+  bindRange(`c${n}FadeFreq`,()=>cl.fadeFreq,v=>cl.fadeFreq=v,4);
+  bindRange(`c${n}Span`,()=>cl.span,v=>cl.span=v,2);
+});
+
+
+document.getElementById('waterEnabled').checked=ARCFG.water.enabled;
+document.getElementById('waterEnabled').addEventListener('change',e=>{ARCFG.water.enabled=e.target.checked;applyAll()});
+bindRange('waterOpacity',()=>ARCFG.water.opacity,v=>ARCFG.water.opacity=v,2);
+bindRange('waterY',()=>ARCFG.water.y,v=>ARCFG.water.y=v,3);
+bindRange('waterZ',()=>ARCFG.water.z,v=>ARCFG.water.z=v,3);
+bindRange('waterScale',()=>ARCFG.water.scale,v=>ARCFG.water.scale=v,2);
+bindRange('waterFlowAmp',()=>ARCFG.water.flowAmp,v=>ARCFG.water.flowAmp=v,3);
+bindRange('waterFlowSpeed',()=>ARCFG.water.flowSpeed,v=>ARCFG.water.flowSpeed=v,2);
+bindRange('waterFeather',()=>ARCFG.water.feather,v=>ARCFG.water.feather=v,3);
+bindRange('waterIrregular',()=>ARCFG.water.irregular,v=>ARCFG.water.irregular=v,3);
+
+bindRange('historySpeed',()=>ARCFG.history.speed,v=>ARCFG.history.speed=v,1);
+bindRange('historyOpacity',()=>ARCFG.history.opacity,v=>{ARCFG.history.opacity=v;syncHistoryStyle()},2);
+bindRange('historyHeight',()=>ARCFG.history.height,v=>{ARCFG.history.height=v;syncHistoryStyle()},0);
+document.getElementById('historyApply').addEventListener('click',()=>{
+  historyText.textContent=historyInput.value.trim()||' ';
+  historyStart=0;syncHistoryStyle();
+});
+explainBtn.addEventListener('click',()=>historyOpen?closeHistory():openHistory());
+
+bindRange('wakeInterval',()=>ARCFG.wake.interval,v=>ARCFG.wake.interval=v,0);
+bindRange('wakeSize',()=>1,v=>{ARCFG.wake.rx=.060*v;ARCFG.wake.ry=.015*v},1);
+bindRange('wakeOpacity',()=>ARCFG.wake.opacity,v=>ARCFG.wake.opacity=v,2);
+bindRange('wakeLife',()=>ARCFG.wake.life,v=>ARCFG.wake.life=v,0);
+bindRange('wakeDrift',()=>ARCFG.wake.drift,v=>ARCFG.wake.drift=v,3);
+
+applyAll();
+
+document.getElementById('snapshot').addEventListener('click',()=>{
+  document.getElementById('values').value=JSON.stringify(ARCFG,null,2);
+});
+
+tunerToggle.addEventListener('click',()=>{
+  tuner.classList.toggle('open');
+  tunerToggle.textContent=tuner.classList.contains('open')?'收起參數':'調整參數';
+});
+
+scene.addEventListener('loaded',()=>ready=true);
+const getMindAR=()=>scene.systems&&scene.systems['mindar-image-system'];
+
+function waitMindAR(timeout=8000){
+  return new Promise((resolve,reject)=>{
+    const t0=Date.now();
+    const i=setInterval(()=>{
+      const s=getMindAR();
+      if(s){clearInterval(i);resolve(s)}
+      else if(Date.now()-t0>timeout){clearInterval(i);reject(new Error('MindAR timeout'))}
+    },100)
+  })
+}
+
+async function unlockVideo(){
+  try{await boatVideo.play();boatVideo.pause();boatVideo.currentTime=0}catch(e){}
+}
+
+function updateCameraInfo(){
+  const cam=[...document.querySelectorAll('video')].find(v=>v!==boatVideo&&v.srcObject);
+  if(!cam){camInfo.textContent='Camera: 尚未取得串流';return}
+  const tr=cam.srcObject.getVideoTracks()[0],s=tr.getSettings?.()||{};
+  camInfo.textContent=`Camera: ${cam.videoWidth||s.width||'?'}×${cam.videoHeight||s.height||'?'} @ ${Math.round(s.frameRate||0)||'?'}fps`;
+}
+
+async function startAR(){
+  if(starting||running)return;
+  starting=true;document.body.classList.add('scanning');showScanLoading();
+  status.textContent='正在啟動高解析度後鏡頭…';
+  try{
+    await unlockVideo();
+    if(!ready&&!scene.hasLoaded)await new Promise(r=>scene.addEventListener('loaded',r,{once:true}));
+    const sys=await waitMindAR();await sys.start();
+    running=true;status.textContent='相機已開啟，請對準明信片';
+    timer=setInterval(updateCameraInfo,500);setTimeout(updateCameraInfo,500);
+  }catch(e){
+    console.error(e);hideScanLoading();document.body.classList.remove('scanning');
+    alert('相機啟動失敗，請確認 HTTPS 與相機權限。');
+  }finally{starting=false}
+}
+
+async function stopAR(){
+  hideScanLoading();closeHistory();
+  clearInterval(timer);
+  try{
+    stopIOSBoatFix();boatVideo.pause();boat1.setAttribute('visible',false);boat2.setAttribute('visible',false);
+    const sys=getMindAR();if(sys&&running)await sys.stop();
+  }catch(e){}
+  running=false;document.body.classList.remove('scanning');
+}
+
+target.addEventListener('targetFound',async()=>{
+  hideScanLoading();
+  status.textContent='辨識成功 ✓ 可直接調參';
+  boat1.setAttribute('visible',true);
+  boat2.setAttribute('visible',ARCFG.boats[1].enabled);
+  try{
+    await boatVideo.play();
+    if(isIOS) startIOSBoatFix();
+  }catch(e){}
+});
+target.addEventListener('targetLost',()=>{
+  closeHistory();showScanLoading();
+  status.textContent='失去 target，請重新對準';
+  boat1.setAttribute('visible',false);boat2.setAttribute('visible',false);
+  stopIOSBoatFix();
+  boatVideo.pause();
+});
+
+startBtn.addEventListener('click',startAR);
+stopBtn.addEventListener('click',stopAR);
+</script>
+</body>
+</html>
